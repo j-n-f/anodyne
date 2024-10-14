@@ -1,0 +1,13 @@
+edition = "2021"
+
+blank_lines_upper_bound = 1
+comment_width = 100
+group_imports = "StdExternalCrate"
+max_width = 100
+merge_derives = true
+overflow_delimited_expr = true
+remove_nested_parens = true
+reorder_impl_items = true
+reorder_imports = true
+reorder_modules = true
+wrap_comments = true

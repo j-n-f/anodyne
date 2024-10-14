@@ -1,0 +1,18 @@
+[package]
+name = "anodyne_derive"
+version = "0.1.0"
+description = "derive macros for `anodyne`"
+authors = ["j-n-f <154852324+j-n-f@users.noreply.github.com>"]
+license = "MIT"
+homepage = "https://github.com/j-n-f/anodyne"
+repository = "https://github.com/j-n-f/anodyne"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+darling = { version = "0.20.10" }
+quote = { version = "1.0" }
+syn = { version = "2.0.15", features = ["full"] }
+proc-macro2 = { version = "1.0.86" }
