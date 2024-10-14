@@ -10,5 +10,5 @@ repository = "https://github.com/j-n-f/anodyne"
 edition = "2021"
 
 [dependencies]
-anodyne_derive = { path = "../anodyne_derive" }
+anodyne_derive = { version = "0.1.0" }
 regex = { version = "1.11.0" }

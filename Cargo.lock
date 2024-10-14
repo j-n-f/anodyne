@@ -15,13 +15,25 @@ dependencies = [
 name = "anodyne"
 version = "0.1.0"
 dependencies = [
- "anodyne_derive",
+ "anodyne_derive 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex",
 ]
 
 [[package]]
 name = "anodyne_derive"
 version = "0.1.0"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "anodyne_derive"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "485b597002e35ddaefc3e8ec9100deaaddeefe35a5a46571b5a910aba76ee52b"
 dependencies = [
  "darling",
  "proc-macro2",
