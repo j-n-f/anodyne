@@ -11,4 +11,12 @@ edition = "2021"
 
 [dependencies]
 anodyne_derive = { version = "0.1.0" }
+axum = { version = "0.7.7", features = ["macros"] }
+delegate = { version = "0.13.1" }
+markup = { version = "0.15.0" }
 regex = { version = "1.11.0" }
+serde = { version = "1.0.210", features = ["derive"] }
+serde_urlencoded = { version = "0.7.1" }
+tokio = { version = "1.0", features = ["full"] }
+tower-service = { version = "0.3" }
+#tokio = { version = "1.0" }

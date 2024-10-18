@@ -77,6 +77,10 @@ pub(crate) fn derive_validates_impl(input: DeriveInput) -> Result<TokenStream> {
                             Ok(())
                         }
                     }
+
+                    fn field_configs(&self) -> &'static [::anodyne::types::FormFieldConfig] {
+                        &#static_ident
+                    }
                 }
             };
 
