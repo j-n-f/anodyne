@@ -8,7 +8,7 @@ use syn::{
     spanned::Spanned, Data, DeriveInput, Error, Expr, Fields, Ident, LitInt, LitStr, Result,
 };
 
-pub(crate) fn derive_validates_impl(input: DeriveInput) -> Result<TokenStream> {
+pub(crate) fn derive_validates_impl(input: &DeriveInput) -> Result<TokenStream> {
     let mut impls = Vec::new();
 
     let struct_ident = &input.ident;
@@ -65,6 +65,7 @@ pub(crate) fn derive_validates_impl(input: DeriveInput) -> Result<TokenStream> {
             // TODO: handle `required` attribute by looking for Option<T>
 
             let form_trait = quote! {
+                #[typetag::serde]
                 impl ::anodyne::traits::Form for #struct_ident {
                     fn validate(&self) -> Result<(), ::std::collections::HashMap<&'static str, Vec<&'static str>>> {
                         let mut error_map = ::std::collections::HashMap::<&'static str, Vec<&'static str>>::new();
@@ -80,6 +81,15 @@ pub(crate) fn derive_validates_impl(input: DeriveInput) -> Result<TokenStream> {
 
                     fn field_configs(&self) -> &'static [::anodyne::types::FormFieldConfig] {
                         &#static_ident
+                    }
+
+                    // TODO: if this function accepted a stack-allocated slice from the caller it
+                    //       could avoid allocation.
+                    fn prefill_values(&self) -> ::std::vec::Vec<Option<String>> {
+                        vec![
+                            #(Some(self.#field_ids.to_string()),)*
+                        ]
+                        //vec![]
                     }
                 }
             };
@@ -149,8 +159,11 @@ impl std::fmt::Debug for FormMeta {
             })
             .field_with("len", |f| f.write_str(&format!("{:?}", self.len)))
             .field_with("regex", |f| f.write_str(&format!("{:?}", self.regex)))
+            .field_with("regex_description", |f| {
+                f.write_str(&format!("{:?}", self.regex_description))
+            })
             .field_with("matches", |f| f.write_str(&format!("{:?}", self.matches)))
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -256,14 +269,20 @@ fn derive_form_field_configs(fields: &Fields) -> Result<Vec<FormMeta>> {
     }
 
     // ensure that any `matches` values match something in the field list
-    let mut all_field_idents = fields.iter().flat_map(|f| &f.ident);
+    let all_field_idents = fields.iter().flat_map(|f| &f.ident).collect::<Vec<_>>();
     let matches_specified = configs
         .iter()
         .filter_map(|cfg| cfg.matches.as_ref().map(|v| v.get_ident()))
         .flatten()
         .collect::<Vec<_>>();
-    for match_required in matches_specified.iter() {
-        if !all_field_idents.any(|id| id.to_string().eq(&match_required.to_string())) {
+    for match_required in &matches_specified {
+        // BUG: should not allow a field to match itself, it's a redundant check. Don't have enough
+        //      metadata here to do the check.
+
+        if !all_field_idents
+            .iter()
+            .any(|id| id.to_string().eq(&match_required.to_string()))
+        {
             return Err(Error::new(
                 match_required.span(),
                 "`matches` attribute doesn't reference any field in this struct",
@@ -279,8 +298,8 @@ fn derive_form_field_configs(fields: &Fields) -> Result<Vec<FormMeta>> {
 }
 
 fn snake_to_capitalized(name: &str) -> String {
-    name.replace("_", " ")
-        .split(" ")
+    name.replace('_', " ")
+        .split(' ')
         .map(|word| {
             let mut c = word.chars();
             match c.next() {
@@ -301,7 +320,7 @@ fn insert_error(ident: &Ident) -> TokenStream {
 fn generate_form_trait_len_validations(configs: &[FormMeta]) -> TokenStream {
     let mut validations = quote! {};
 
-    for config in configs.iter() {
+    for config in configs {
         let ident = config.ident.as_ref().unwrap();
         let label = config.label.as_ref().unwrap();
         let err = insert_error(config.name.as_ref().unwrap());
@@ -334,7 +353,7 @@ fn generate_form_trait_len_validations(configs: &[FormMeta]) -> TokenStream {
                         let min = range_inclusive.start;
                         let max = range_inclusive.end;
                         validations.extend(quote! {
-                            if !(#min..#max).contains(&self.#ident.len()) {
+                            if !(#min..=#max).contains(&self.#ident.len()) {
                                 #err.push(
                                     concat!(#label, " must have between ", #min, " and ", #max, " characters")
                                 );
@@ -353,7 +372,7 @@ fn generate_form_trait_len_validations(configs: &[FormMeta]) -> TokenStream {
 fn generate_form_trait_field_match_validations(configs: &[FormMeta]) -> TokenStream {
     let mut validations = quote! {};
 
-    for config in configs.iter() {
+    for config in configs {
         let match_rule_source = config.ident.as_ref().unwrap();
         let match_rule_source_label = config.label.as_ref().unwrap();
         let err = insert_error(config.name.as_ref().unwrap());
@@ -384,7 +403,7 @@ fn generate_form_trait_regex_validations(
 ) -> TokenStream {
     let mut validations = quote! {};
 
-    for config in configs.iter() {
+    for config in configs {
         let ident = config.ident.as_ref().unwrap();
         let label = config.label.as_ref().unwrap();
         let err = insert_error(config.name.as_ref().unwrap());
@@ -430,7 +449,7 @@ fn generate_form_trait_regex_validations(
             validations.extend(quote! {
                 #re_compile
                 #re_test
-            })
+            });
         }
     }
 
