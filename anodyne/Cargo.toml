@@ -10,13 +10,23 @@ repository = "https://github.com/j-n-f/anodyne"
 edition = "2021"
 
 [dependencies]
+
+# Framework
 anodyne_derive = { version = "0.1.0" }
-axum = { version = "0.7.7", features = ["macros"] }
-delegate = { version = "0.13.1" }
+
+# Dependencies
+axum = { version = "0.7", features = ["macros"] }
+base64 = { version = "0.22.1" }
+chrono = { version = "0.4.38" }
+cookie = { version = "0.18.1" }
 markup = { version = "0.15.0" }
 regex = { version = "1.11.0" }
 serde = { version = "1.0.210", features = ["derive"] }
+serde_json = { version = "1.0.128" }
 serde_urlencoded = { version = "0.7.1" }
 tokio = { version = "1.0", features = ["full"] }
-tower-service = { version = "0.3" }
-#tokio = { version = "1.0" }
+typetag = { version = "0.2" }
+uuid = { version = "1.11.0", features = ["v4", "fast-rng"] }
+
+# Crypto
+chacha20poly1305 = { version = "0.10.1" }
