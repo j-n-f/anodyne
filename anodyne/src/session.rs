@@ -4,13 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use axum::{
-    extract::{ConnectInfo, Request},
-    http::HeaderValue,
-    middleware::Next,
-    response::{IntoResponse, Response},
-    Extension, RequestExt,
-};
+use axum::extract::{ConnectInfo, Request};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chacha20poly1305::{
     aead::{generic_array::typenum::Unsigned, Aead, AeadCore, KeyInit, OsRng},
@@ -23,142 +17,15 @@ use uuid::Uuid;
 #[derive(Clone, Debug)]
 pub struct SessionUuid(pub Uuid);
 
-/// A base64-encoded session cookie
-#[derive(Clone, Debug)]
-pub(crate) struct OutgoingSessionToken(pub String);
-
 // TODO: some kind of FromRequestParts extractor for session so that I don't have to do so much
 //       verbose nonsense, and can make use of Axum's infra
-
-/// Given some request, add an extension for getting the session UUID of the current request.
-async fn load_or_create_session(
-    request: &mut Request,
-) -> Result<Option<OutgoingSessionToken>, SessionError> {
-    let mut eventual_uuid: Option<Uuid> = None;
-
-    let headers = request.headers().clone();
-
-    let cookies_rx: crate::util::CookieJar = headers
-        .get(axum::http::header::COOKIE)
-        .map(|hv| hv.to_str().unwrap())
-        .unwrap_or_default()
-        .try_into()
-        .expect("couldn't parse cookies");
-
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .map(|hv| HeaderValue::to_str(hv).unwrap().to_string())
-        .expect("no user agent");
-
-    let client_ip = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .copied()
-        .unwrap();
-
-    let Extension(session_table) = request
-        .extract_parts::<Extension<Arc<Mutex<SessionTable>>>>()
-        .await
-        .unwrap();
-
-    let mut locked_session_table = session_table.lock().await;
-
-    // First see if the user provided a UUID in the cookie
-    let encrypted_session_cookie = cookies_rx.get_cookie_named("session");
-    if let Some(encrypted_session_cookie) = encrypted_session_cookie {
-        if let Ok(uuid) = SessionTable::get_session_uuid_from_cookie(encrypted_session_cookie) {
-            // TODO: below prints should be trace logs
-            //println!("load_or_create: uuid = {uuid}");
-
-            // If it's in the session store we can continue using it, otherwise we're going to have
-            // to generate a new one
-            if locked_session_table.sessions.contains_key(&uuid) {
-                //println!("load_or_create:   > found in table, will reuse");
-                eventual_uuid = Some(uuid);
-            } else {
-                //println!("load_or_create:   > wasn't in table, will generate new");
-            }
-        } else {
-            //println!("load_or_create: no cookie found");
-        }
-    }
-
-    if let Some(eventual_uuid) = eventual_uuid {
-        // Otherwise, we had a token, and we'll just keep using that
-        request.extensions_mut().insert(SessionUuid(eventual_uuid));
-        // early return
-        return Ok(None);
-    }
-
-    // If none was provided in the cookie then we have to create a session, and provide that
-    // UUID as an extension so later stages can reference the value.
-    let new_session_id = Uuid::new_v4();
-    let new_session = Session {
-        uuid: new_session_id,
-        user_id: None,
-        started_at: chrono::Utc::now(),
-        expires_at: chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(1))
-            .unwrap(),
-        revoked_at: None,
-        revoked_by_user_id: None,
-        fingerprint: SessionFingerprint {
-            user_agent,
-            ip_address: Some(client_ip.ip()),
-        },
-        data: SessionDataStore::default(),
-    };
-
-    let outgoing_base64: OutgoingSessionToken = match new_session.as_cookie() {
-        Ok(cookie) => OutgoingSessionToken(cookie),
-        Err(session_err) => return Err(session_err),
-    };
-
-    // Add any newly created session to the global table
-    locked_session_table.insert_session(new_session)?;
-
-    // Add an extension to this request so later middleware can access the new/existing session UUID
-    request.extensions_mut().insert(SessionUuid(new_session_id));
-
-    // Drop the global session table to avoid blocking other requests
-    drop(locked_session_table);
-
-    // This will be either a new or existing session cookie
-    Ok(Some(outgoing_base64))
-}
-
-pub async fn session_management_middleware(mut request: Request, next: Next) -> Response {
-    // TODO: This function 1) loads the session uuid as an extension, 2) returns the UUID
-    //       It should probably just be broken into its own middleware so that we can just use the
-    //       extractor in this function (i.e. as part of the signature to
-    //       `session_management_middleware`)
-    let outgoing_token = load_or_create_session(&mut request).await;
-
-    let mut response = next.run(request).await;
-
-    // This convoluted logic is because we only want to send Set-Cookie the first time we generate
-    // a new session.
-    if let Ok(Some(outgoing_token)) = outgoing_token {
-        let Ok(header_value) =
-            HeaderValue::from_str(&format!("session={}; HttpOnly", outgoing_token.0))
-        else {
-            return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        };
-
-        response
-            .headers_mut()
-            .append(axum::http::header::SET_COOKIE, header_value);
-    }
-
-    response
-}
 
 /// Session UUIDs should be sufficient to identify sessions uniquely, but this metadata might e.g.
 /// help identify hijacked cookies being used from different IPs/browsers.
 #[derive(Default, Debug)]
 pub struct SessionFingerprint {
     #[allow(unused)]
-    user_agent: String,
+    user_agent: Option<String>,
     #[allow(unused)]
     ip_address: Option<IpAddr>,
 }
@@ -214,6 +81,8 @@ pub struct SessionDataStore {
 /// Errors related to sessions.
 #[derive(Debug, Default)]
 pub enum SessionError {
+    /// Failed to create a new session
+    SessionCreationError(String),
     /// Tried to create a session which already exists
     SessionAlreadyExists,
     /// Failed to insert data related to a session
@@ -222,6 +91,8 @@ pub enum SessionError {
     CookieGenerationFailed(String),
     /// Failed to decode an encrypted cookie
     CookieDecodeFailed(String),
+    /// Failed to get a handle to the session store
+    StoreUnavailable,
     #[default]
     Unknown,
 }
@@ -261,6 +132,57 @@ impl SessionDataStore {
 }
 
 impl Session {
+    /// Generate a `Session` from a request and its metadata.
+    ///
+    /// # Errors
+    ///
+    /// * `SessionError::SessionCreateError` - if a session can't be created.
+    pub fn new_from_request(request: &Request) -> Result<Self, SessionError> {
+        let user_agent_header = request
+            .headers()
+            .get(axum::http::header::USER_AGENT)
+            .cloned();
+        let user_agent = if let Some(user_agent) = user_agent_header {
+            user_agent.to_str().ok().map(ToString::to_string)
+        } else {
+            None
+        };
+
+        let client_ip = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .copied()
+            .map(|client_ip| client_ip.ip());
+
+        let start = chrono::Utc::now();
+        let Some(expiry) = start.checked_add_days(chrono::Days::new(1)) else {
+            // Absurd, but technically possible
+            return Err(SessionError::SessionCreationError(
+                "couldn't set expiry time".into(),
+            ));
+        };
+
+        Ok(Session {
+            uuid: Uuid::new_v4(),
+            user_id: None,
+            started_at: start,
+            expires_at: expiry,
+            revoked_at: None,
+            revoked_by_user_id: None,
+            fingerprint: SessionFingerprint {
+                user_agent,
+                ip_address: client_ip,
+            },
+            data: SessionDataStore::default(),
+        })
+    }
+
+    /// Get the UUID for this session.
+    #[must_use]
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+
     /// Convert a session into a cookie.
     ///
     /// # Errors
@@ -326,7 +248,7 @@ impl Session {
 /// A global table of all session data.
 #[derive(Debug, Default)]
 pub struct SessionTable {
-    sessions: HashMap<uuid::Uuid, Session>,
+    sessions: HashMap<uuid::Uuid, Arc<Mutex<Session>>>,
 }
 
 impl SessionTable {
@@ -344,15 +266,27 @@ impl SessionTable {
     /// * `SessionError::SessionAlreadyExists` if the UUID is already in the table. Could be a
     ///   collision, or the caller tried to insert twice.
     pub fn insert_session(&mut self, session: Session) -> Result<(), SessionError> {
-        match self.sessions.try_insert(session.uuid, session) {
+        match self
+            .sessions
+            .try_insert(session.uuid, Arc::new(Mutex::new(session)))
+        {
             Ok(_old_session_data) => Ok(()),
             Err(_e) => Err(SessionError::SessionAlreadyExists),
         }
     }
 
     /// Returns a mutable reference to a session if it exists.
-    pub fn session_mut(&mut self, uuid: &Uuid) -> Option<&mut Session> {
-        self.sessions.get_mut(uuid)
+    ///
+    /// **IMPORTANT:** don't hold this lock while `await`ing the `Next` function in a middleware
+    /// unless you're certain that inner calls won't use it. It's an easy way to cause deadlocks.
+    ///
+    /// Usually you can just use an `Extension` extractor to get access to this, and you won't need
+    /// to call this function directly. You might use this e.g. to implement an admin user
+    /// manipulating a session on behalf of another user, or when some user wants to invalidate a
+    /// session from another browser/client.
+    #[must_use]
+    pub fn get_session_handle(&self, uuid: &Uuid) -> Option<Arc<Mutex<Session>>> {
+        self.sessions.get(uuid).cloned()
     }
 
     /// Get information necessary to identify a session from a base64-encoded cookie.

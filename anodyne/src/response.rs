@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use axum::{
-    body::Body,
-    http::{HeaderValue, Response},
-};
+use axum::{body::Body, http::Response, response::Redirect};
 
 /// Expected return type for handler functions
 pub type AnodyneResult<TForm> = Result<AnodyneResponse<TForm>, AnodyneError>;
@@ -112,11 +109,7 @@ where
                 assert!(insertion.is_none(), "response already had lazy view data");
             }
             AnodyneResponseContent::Redirect(url) => {
-                response.headers_mut().insert(
-                    axum::http::header::LOCATION,
-                    HeaderValue::from_str(&url).unwrap(),
-                );
-                *response.status_mut() = axum::http::StatusCode::TEMPORARY_REDIRECT;
+                response = Redirect::to(&url).into_response();
             }
             AnodyneResponseContent::Empty => {}
         }

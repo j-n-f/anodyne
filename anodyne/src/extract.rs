@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use axum::{
     response::{IntoResponse, Redirect},
-    Extension, RequestExt,
+    RequestExt,
 };
 use tokio::sync::Mutex;
 
-use crate::session::{SessionTable, SessionUuid};
+use crate::{session::Session, util::server_error};
 
 /// A form extractor which drives anodyne's automatic form handling. This extractor implements
 /// `axum::extract::FromRequest` meaning that it must be the last argument to your handler function.
@@ -41,22 +41,25 @@ where
     type Rejection = FormValidationError;
 
     async fn from_request(
-        mut request: ::axum::http::Request<axum::body::Body>,
+        request: ::axum::http::Request<axum::body::Body>,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
-        let referer_header = request
-            .headers()
-            .get(axum::http::header::REFERER)
-            .unwrap()
-            .clone();
-        let referer_route = referer_header.to_str().unwrap();
+        // Parse referer header
+        let Some(referer_header) = request.headers().get(axum::http::header::REFERER).cloned()
+        else {
+            return Err(FormValidationError::unrecoverable("missing referer"));
+        };
+        let Ok(referer_route) = referer_header.to_str() else {
+            return Err(FormValidationError::unrecoverable("referer parse error"));
+        };
 
-        let host_header = request
-            .headers()
-            .get(axum::http::header::HOST)
-            .unwrap()
-            .clone();
-        let host = host_header.to_str().unwrap();
+        // Parse host header
+        let Some(host_header) = request.headers().get(axum::http::header::HOST).cloned() else {
+            return Err(FormValidationError::unrecoverable("missing host"));
+        };
+        let Ok(host) = host_header.to_str() else {
+            return Err(FormValidationError::unrecoverable("host parse error"));
+        };
 
         // TODO: Make an extractor for this logic
         // This is ugly, but most likely to work. It will require more research to figure out e.g.
@@ -72,18 +75,12 @@ where
 
         // TODO: branch on content-accept: HTML, and JSON (API for free, without special route)
 
-        let Ok(Extension(session_table)) = request
-            .extract_parts::<Extension<Arc<Mutex<SessionTable>>>>()
-            .await
-        else {
+        let Some(session) = request.extensions().get::<Arc<Mutex<Session>>>() else {
             return Err(FormValidationError::unrecoverable(
-                "session management error",
+                "can't perform validation without session",
             ));
         };
-
-        let Some(current_session_uuid) = request.extensions().get::<SessionUuid>().cloned() else {
-            return Err(FormValidationError::unrecoverable("session error"));
-        };
+        let session = session.clone();
 
         match request.extract().await {
             Ok(::axum::extract::RawForm(bytes)) => {
@@ -100,14 +97,7 @@ where
 
                 match value.validate() {
                     Ok(()) => {
-                        // Clear any existing prefill values in session
-                        let mut table = session_table.lock().await;
-
-                        // store existing values in session
-                        let Some(session) = table.session_mut(&current_session_uuid.0) else {
-                            eprintln!("needed to store refill data but session didn't exist");
-                            return Err(FormValidationError::unrecoverable("session error"));
-                        };
+                        let mut session = session.lock().await;
 
                         let Ok(()) = session
                             .data
@@ -116,21 +106,14 @@ where
                             return Err(FormValidationError::unrecoverable("session state error"));
                         };
 
-                        // Release lock on session table
-                        drop(table);
+                        // Release session lock
+                        drop(session);
 
                         // Pass form data to its handler.
                         return Ok(FormData(value));
                     }
                     Err(map) => {
-                        // Store values submitted so far in session data
-                        let mut table = session_table.lock().await;
-
-                        // store existing values in session
-                        let Some(session) = table.session_mut(&current_session_uuid.0) else {
-                            eprintln!("needed to store refill data but session didn't exist");
-                            return Err(FormValidationError::unrecoverable("session error"));
-                        };
+                        let mut session = session.lock().await;
 
                         // TODO: try flatbuffers
                         let refill_values = serde_json::to_string(
@@ -149,10 +132,12 @@ where
                                 (axum::http::Method::GET, app_referer_route.to_string()),
                                 (refill_values, map),
                             )
-                            .expect("couldn't store erroneous form data in session");
+                            .map_err(|_err| {
+                                FormValidationError::unrecoverable("session storage failure")
+                            })?;
 
-                        // Release lock on session table
-                        drop(table);
+                        // Release session lock
+                        drop(session);
 
                         // redirect to referer
                         return Err(FormValidationError::redirect(
@@ -207,11 +192,9 @@ impl IntoResponse for FormValidationError {
                 _ => Redirect::temporary(&url).into_response(),
             },
             // HTTP 500
-            FormValidationError::Unrecoverable { user_visible_error } => (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                user_visible_error,
-            )
-                .into_response(),
+            FormValidationError::Unrecoverable { user_visible_error } => {
+                server_error!(user_visible_error)
+            }
         }
     }
 }
